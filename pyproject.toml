@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vk-tg-bridge"
+version = "0.1.0"
+description = "Личные сообщения ВКонтакте в отдельные чаты Telegram"
+requires-python = ">=3.13"
+dependencies = [
+    "aiohttp>=3.14.5",
+    "pillow>=12.3.0",
+    "pydantic>=2.14.1",
+    "pydantic-settings>=2.16.0",
+    "telethon>=1.45.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.11.0",
+]
+
+
+[project.scripts]
+vk-tg-bridge = "vk_tg_bridge.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vk_tg_bridge"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+]
+
+[tool.template]
+source = "python_package_template@2026-05-25+9ad4b7df7d4b"
