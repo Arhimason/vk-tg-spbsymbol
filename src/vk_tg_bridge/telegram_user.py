@@ -6,9 +6,12 @@ from typing import Any
 
 from telethon import TelegramClient, events, utils
 from telethon.errors import (
+    ChannelInvalidError,
+    ChannelPrivateError,
     ChatAboutNotModifiedError,
     ChatNotModifiedError,
     FloodWaitError,
+    PeerIdInvalidError,
     UserAlreadyParticipantError,
 )
 from telethon.tl.functions.account import UpdateNotifySettingsRequest
@@ -43,6 +46,7 @@ from vk_tg_bridge.constants import (
     MEDIA_VIDEO,
     MEDIA_VIDEO_NOTE,
     MEDIA_VOICE,
+    RELAY_CHAT_MEMBERS,
     VK_FILE_LIMIT_BYTES,
     VK_PHOTO_LIMIT_BYTES,
     VK_VOICE_LIMIT_BYTES,
@@ -66,6 +70,8 @@ class TelegramUser:
             api_id=settings.telegram_api_id,
             api_hash=settings.telegram_api_hash,
         )
+        self._relay_members = RELAY_CHAT_MEMBERS
+        self._bot_id: int | None = None
         self._on_reply: ReplyHandler | None = None
         self._on_edit: ReplyHandler | None = None
         self._on_delete: ReplyHandler | None = None
@@ -75,15 +81,20 @@ class TelegramUser:
         await self._client.connect()
         if not await self._client.is_user_authorized():
             raise SystemExit("Нет сессии Telegram. Сначала: vk-tg-bridge login")
+        if self._relay_members and self._bot_username:
+            self._bot_id = await self._remember_bot()
+        own_only = None if self._relay_members else True
         self._client.add_event_handler(
             self._on_outgoing,
-            events.NewMessage(outgoing=True),
+            events.NewMessage(outgoing=own_only),
         )
         self._client.add_event_handler(
             self._on_edited,
-            events.MessageEdited(outgoing=True),
+            events.MessageEdited(outgoing=own_only),
         )
         self._client.add_event_handler(self._on_deleted, events.MessageDeleted())
+        if self._relay_members:
+            logger.info("сообщения участников чата, кроме бота, уходят в VK")
         logger.info("личная сессия Telethon подключена")
 
     async def disconnect(self) -> None:
@@ -122,6 +133,18 @@ class TelegramUser:
         await self.allow_reactions(chat_id)
         logger.info("создана группа %s (%s)", title, chat_id)
         return chat_id
+
+    async def has_chat(self, chat_id: int) -> bool:
+        try:
+            await self._client.get_entity(chat_id)
+        except FloodWaitError:
+            raise
+        except (ChannelInvalidError, ChannelPrivateError, PeerIdInvalidError, ValueError):
+            return False
+        except Exception:
+            logger.exception("не удалось проверить чат %s", chat_id)
+            return False
+        return True
 
     async def open_service_chat(self) -> int:
         try:
@@ -250,9 +273,39 @@ class TelegramUser:
         await self._client.disconnect()
         logger.info("сессия Telegram сохранена")
 
+    async def _remember_bot(self) -> int | None:
+        try:
+            entity = await self._client.get_entity(self._bot_username)
+        except Exception:
+            logger.exception("не удалось узнать id бота %s", self._bot_username)
+            return None
+        bot_id = getattr(entity, "id", None)
+        if not isinstance(bot_id, int):
+            logger.error("не удалось узнать id бота %s", self._bot_username)
+            return None
+        return bot_id
+
+    def _accepts(self, event: Any) -> bool:
+        message = getattr(event, "message", None)
+        service = message is not None and getattr(message, "action", None) is not None
+        sender_id = getattr(event, "sender_id", None)
+        return counts_as_own_message(
+            relay_members=self._relay_members,
+            outgoing=bool(getattr(event, "out", False)),
+            sender_id=sender_id if isinstance(sender_id, int) else None,
+            bot_id=self._bot_id,
+            service=service,
+        )
+
     async def _on_outgoing(self, event: events.NewMessage.Event) -> None:
-        if event.chat_id is None or self._on_reply is None:
+        if event.chat_id is None or self._on_reply is None or not self._accepts(event):
             return
+        if self._relay_members and not event.out:
+            logger.info(
+                "сообщение участника %s в чате %s уходит в VK",
+                event.sender_id,
+                event.chat_id,
+            )
         try:
             text, files = await outgoing_parts(event)
             await self._on_reply(
@@ -266,7 +319,7 @@ class TelegramUser:
             logger.exception("не удалось отправить ответ в VK")
 
     async def _on_edited(self, event: events.MessageEdited.Event) -> None:
-        if event.chat_id is None or self._on_edit is None:
+        if event.chat_id is None or self._on_edit is None or not self._accepts(event):
             return
         try:
             await self._on_edit(
@@ -285,6 +338,25 @@ class TelegramUser:
                 await self._on_delete(chat_id=event.chat_id, telegram_message_id=message_id)
             except Exception:
                 logger.exception("не удалось передать удаление %s в VK", message_id)
+
+
+def counts_as_own_message(
+    *,
+    relay_members: bool,
+    outgoing: bool,
+    sender_id: int | None,
+    bot_id: int | None,
+    service: bool,
+) -> bool:
+    if service:
+        return False
+    if not relay_members:
+        return outgoing
+    if outgoing:
+        return True
+    if sender_id is None or bot_id is None or sender_id == bot_id:
+        return False
+    return True
 
 
 def telegram_message_id(event: Any) -> int | None:

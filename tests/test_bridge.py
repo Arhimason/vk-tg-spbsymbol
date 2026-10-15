@@ -2,8 +2,16 @@ import asyncio
 import json
 from datetime import datetime
 
+from telethon.errors import FloodWaitError
+
+from vk_tg_bridge.app import _deliver
 from vk_tg_bridge.bridge import Bridge
-from vk_tg_bridge.constants import DELIVERED_REACTION, READ_REACTION
+from vk_tg_bridge.constants import (
+    DELIVERED_REACTION,
+    READ_REACTION,
+    SERVICE_CHAT_KEY,
+    SERVICE_MESSAGE_KEY,
+)
 from vk_tg_bridge.models import InboundFile, IncomingVkMessage, LoadedMessage, OutboundFile, SentVkMessage
 from vk_tg_bridge.store import Store
 from vk_tg_bridge.text import chat_title
@@ -19,7 +27,9 @@ class FakeVk:
         self.deletes: list[tuple[int, int]] = []
         self.presence: dict[int, tuple[bool, int | None] | None] = {}
         self.expires_at: float | None = None
+        self.screens: dict[str, int] = {}
         self.fail_reply = False
+        self.fail_send = False
 
     async def title_for(self, peer_id: int) -> str:
         return "Анна Иванова" if peer_id == 42 else ""
@@ -51,6 +61,8 @@ class FakeVk:
         files: list[OutboundFile],
         reply_to: int | None = None,
     ) -> SentVkMessage:
+        if self.fail_send:
+            raise VkApiError(code=10, message="не принято")
         if reply_to is not None and self.fail_reply:
             self.fail_reply = False
             raise VkApiError(code=100, message="reply")
@@ -77,8 +89,18 @@ class FakeVk:
     async def presence_for(self, user_id: int) -> tuple[bool, int | None] | None:
         return self.presence.get(user_id)
 
+    async def presence_for_many(self, user_ids: list[int]) -> dict[int, tuple[bool, int | None]]:
+        return {
+            user_id: value
+            for user_id in user_ids
+            if (value := self.presence.get(user_id)) is not None
+        }
+
     def token_expires_at(self) -> float | None:
         return self.expires_at
+
+    async def peer_by_screen_name(self, screen_name: str) -> int | None:
+        return self.screens.get(screen_name)
 
 
 class FakeGroups:
@@ -94,6 +116,8 @@ class FakeGroups:
         self.abouts: list[tuple[int, str]] = []
         self.service_opened = 0
         self.pins: list[tuple[int, int]] = []
+        self.missing_chats: set[int] = set()
+        self.flood_seconds = 0
 
     async def allow_reactions(self, chat_id: int) -> None:
         self.reactions_allowed.append(chat_id)
@@ -105,6 +129,8 @@ class FakeGroups:
         self.reactions.append((chat_id, message_id, emoji))
 
     async def create_group(self, title: str, photo: bytes | None = None) -> int:
+        if self.flood_seconds:
+            raise FloodWaitError(None, self.flood_seconds)
         self.created.append(title)
         self.photos.append(photo)
         return -100500
@@ -121,6 +147,9 @@ class FakeGroups:
     async def open_service_chat(self) -> int:
         self.service_opened += 1
         return -100777
+
+    async def has_chat(self, chat_id: int) -> bool:
+        return chat_id not in self.missing_chats
 
     async def pin(self, chat_id: int, message_id: int) -> None:
         self.pins.append((chat_id, message_id))
@@ -369,6 +398,36 @@ def test_read_receipt_sets_eyes_on_outgoing_messages(tmp_path) -> None:
     ]
 
 
+def test_read_receipts_do_not_delay_the_incoming_message(tmp_path) -> None:
+    bridge, store, _vk, groups, bot = _bridge(tmp_path)
+    store.save_message_link(
+        telegram_chat_id=-100500,
+        telegram_message_id=10,
+        vk_peer_id=42,
+        vk_message_id=100,
+        vk_conversation_message_id=4,
+        outgoing=True,
+    )
+    store.save_message_link(
+        telegram_chat_id=-100500,
+        telegram_message_id=11,
+        vk_peer_id=42,
+        vk_message_id=101,
+        vk_conversation_message_id=8,
+        outgoing=True,
+    )
+    bridge.note_read(42, 4)
+    bridge.note_read(42, 9)
+    asyncio.run(bridge.handle_vk(IncomingVkMessage(message_id=1, peer_id=42, text="привет")))
+    assert bot.sent
+    assert groups.reactions == []
+    asyncio.run(bridge.apply_pending_reads())
+    assert groups.reactions == [
+        (-100500, 10, READ_REACTION),
+        (-100500, 11, READ_REACTION),
+    ]
+
+
 def test_vk_edit_keeps_the_previous_text(tmp_path) -> None:
     bridge, store, vk, _groups, bot = _bridge(tmp_path)
     store.save_message_link(
@@ -478,6 +537,34 @@ def test_service_chat_shows_status_and_answers_the_command(tmp_path) -> None:
     assert all(chat_id == -100777 for chat_id, _text in bot.texts)
 
 
+def test_add_command_opens_pages_before_the_first_message(tmp_path) -> None:
+    bridge, _store, vk, groups, bot = _bridge(tmp_path)
+    vk.screens["durov"] = 42
+    command = "/a https://vk.com/id42 https://vk.com/durov https://vk.com/nope"
+    asyncio.run(bridge.handle_reply(chat_id=77, text=command))
+    asyncio.run(bridge.handle_reply(chat_id=-100500, text="/a https://vk.com/id42"))
+    assert groups.created == [chat_title("Анна Иванова", 42)]
+    assert "создан: [VK] Анна Иванова" in bot.texts[0][1]
+    assert "уже есть: [VK] Анна Иванова" in bot.texts[0][1]
+    assert "не нашёл: https://vk.com/nope" in bot.texts[0][1]
+    assert "уже есть: [VK] Анна Иванова" in bot.texts[1][1]
+    assert vk.sent == []
+
+
+def test_missing_service_chat_is_created_for_a_new_account(tmp_path) -> None:
+    bridge, store, _vk, groups, bot = _bridge(tmp_path)
+    store.save_runtime(SERVICE_CHAT_KEY, "-1001")
+    store.save_runtime(SERVICE_MESSAGE_KEY, "9")
+    groups.missing_chats.add(-1001)
+    asyncio.run(bridge.pulse(now=datetime(2026, 10, 15, 21, 30)))
+    assert groups.service_opened == 1
+    assert store.read_runtime_int(SERVICE_CHAT_KEY) == -100777
+    assert store.read_runtime_int(SERVICE_MESSAGE_KEY) == 501
+    assert bot.texts[0][0] == -100777
+    assert bot.revised == []
+    assert groups.pins == [(-100777, 501)]
+
+
 def test_typing_shows_in_an_existing_chat_only(tmp_path) -> None:
     bridge, store, _vk, groups, bot = _bridge(tmp_path)
     store.save_peer(vk_peer_id=42, title="[VK] Анна", telegram_chat_id=-100500, bot_invited=True)
@@ -514,3 +601,33 @@ def test_broken_reply_link_does_not_drop_the_message(tmp_path) -> None:
     )
     assert vk.sent[-1][1] == "обратно"
     assert vk.reply_targets[-1] is None
+
+
+def test_group_limit_is_posted_once_to_the_service_chat(tmp_path) -> None:
+    bridge, store, _vk, groups, bot = _bridge(tmp_path)
+    store.save_runtime(SERVICE_CHAT_KEY, "-1009")
+    groups.flood_seconds = 7200
+    message = IncomingVkMessage(message_id=5, peer_id=42, text="привет")
+    asyncio.run(_deliver(bridge=bridge, message=message))
+    asyncio.run(_deliver(bridge=bridge, message=message))
+    assert groups.created == []
+    assert len(bot.texts) == 1
+    assert bot.texts[0][0] == -1009
+    assert "ошибка · создание чата" in bot.texts[0][1]
+    assert "50 новых групп" in bot.texts[0][1]
+    assert "peer 42, сообщение 5" in bot.texts[0][1]
+    assert "привет" in bot.texts[0][1]
+    assert "само не повторится" in bot.texts[0][1]
+
+
+def test_failed_vk_send_is_posted_to_the_service_chat(tmp_path) -> None:
+    bridge, store, vk, _groups, bot = _bridge(tmp_path)
+    store.save_runtime(SERVICE_CHAT_KEY, "-1009")
+    store.save_peer(vk_peer_id=42, title="[VK] Анна", telegram_chat_id=-100500, bot_invited=True)
+    vk.fail_send = True
+    asyncio.run(bridge.handle_reply(chat_id=-100500, text="привет"))
+    assert vk.sent == []
+    assert bot.texts[0][0] == -1009
+    assert "отправка в VK" in bot.texts[0][1]
+    assert "привет" in bot.texts[0][1]
+    assert "не принято" in bot.texts[0][1]

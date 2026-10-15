@@ -1,6 +1,8 @@
 import json
+import re
 from enum import Enum
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from vk_tg_bridge.constants import (
     CHAT_PEER_BASE,
@@ -104,11 +106,70 @@ def presence_from_user(payload: Any) -> tuple[bool, int | None] | None:
     if user.get(JsonKey.ONLINE) == 1 or user.get(JsonKey.ONLINE_MOBILE) == 1:
         return True, None
     last_seen = user.get(JsonKey.LAST_SEEN)
-    if not isinstance(last_seen, dict):
+    if isinstance(last_seen, dict):
+        stamp = last_seen.get(JsonKey.TIME)
+        if isinstance(stamp, int) and stamp > 0:
+            return False, stamp
+    return False, None
+
+
+_VK_HOSTS = {"vk.com", "vk.ru", "m.vk.com", "m.vk.ru"}
+_SCREEN_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_.]*")
+
+
+def add_command_targets(text: str) -> list[str] | None:
+    parts = text.strip().split()
+    if not parts:
         return None
-    stamp = last_seen.get(JsonKey.TIME)
-    if isinstance(stamp, int) and stamp > 0:
-        return False, stamp
+    head = parts[0].split("@", 1)[0].lower()
+    if head != "/a":
+        return None
+    return parts[1:]
+
+
+def page_target(token: str) -> int | str | None:
+    raw = token.strip().strip("<>").rstrip(".,);")
+    if not raw:
+        return None
+    lowered = raw.lower()
+    if "://" not in lowered and not lowered.startswith(("vk.com/", "vk.ru/", "m.vk.com/", "m.vk.ru/")):
+        return _page_slug(raw)
+    if "://" not in raw:
+        raw = f"https://{raw}"
+    parsed = urlparse(raw)
+    host = parsed.netloc.lower().removeprefix("www.")
+    if host not in _VK_HOSTS:
+        return None
+    selected = parse_qs(parsed.query).get("sel", [None])[0]
+    if isinstance(selected, str) and selected.lstrip("-").isdigit() and selected not in {"", "-"}:
+        return int(selected)
+    slug = parsed.path.strip("/").split("/", 1)[0]
+    return _page_slug(slug)
+
+
+def _page_slug(slug: str) -> int | str | None:
+    if slug.startswith("id") and slug[2:].isdigit() and int(slug[2:]) > 0:
+        return int(slug[2:])
+    for prefix in ("club", "public", "event"):
+        number = slug[len(prefix):]
+        if slug.startswith(prefix) and number.isdigit() and int(number) > 0:
+            return -int(number)
+    if _SCREEN_NAME.fullmatch(slug):
+        return slug
+    return None
+
+
+def peer_from_resolved(payload: Any) -> int | None:
+    if not isinstance(payload, dict):
+        return None
+    object_id = payload.get(JsonKey.OBJECT_ID)
+    if not isinstance(object_id, int) or object_id <= 0:
+        return None
+    kind = payload.get(JsonKey.TYPE)
+    if kind == "user":
+        return object_id
+    if kind in {"group", "page", "event"}:
+        return -object_id
     return None
 
 

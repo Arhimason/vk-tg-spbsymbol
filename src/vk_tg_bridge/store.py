@@ -277,6 +277,10 @@ class Store:
             return None
         return int(value)
 
+    def delete_runtime(self, key: str) -> None:
+        self._conn.execute("DELETE FROM runtime WHERE key = ?", (key,))
+        self._conn.commit()
+
     def save_runtime(self, key: str, value: str) -> None:
         self._conn.execute(
             """

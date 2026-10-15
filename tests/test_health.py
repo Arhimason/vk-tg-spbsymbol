@@ -1,7 +1,10 @@
 from datetime import datetime
 
 from vk_tg_bridge.health import (
+    IncidentGate,
     decide_watch,
+    flood_wait_detail,
+    format_incident,
     format_status,
     is_status_command,
     silence_notice,
@@ -43,3 +46,23 @@ def test_watch_alerts_once_until_the_pulse_returns() -> None:
     assert recovered.action == "clear"
     missing = decide_watch(heartbeat_at=None, now=800, stale_after=600, alerted=False, chat_id=None)
     assert missing.action == "wait"
+
+
+def test_long_flood_wait_names_the_daily_group_limit() -> None:
+    detail = flood_wait_detail(7200, action="создать группу")
+    text = format_incident(now=WHEN, title="создание чата", detail=detail)
+    assert text == f"ошибка · создание чата\n15 окт 21:30\n{detail}"
+    assert "2 ч (7200 с)" in text
+    assert "50 новых групп" in text
+    short = flood_wait_detail(40, action="создать группу")
+    assert "40 с" in short
+    assert "50" not in short
+
+
+def test_incident_gate_repeats_only_after_the_window() -> None:
+    gate = IncidentGate(repeat_after=900)
+    assert gate.due("create-group:1", 0)
+    gate.mark("create-group:1", 0)
+    assert not gate.due("create-group:1", 899)
+    assert gate.due("create-group:1", 900)
+    assert gate.due("create-group:2", 100)

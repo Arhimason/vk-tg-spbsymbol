@@ -7,6 +7,7 @@ import aiohttp
 
 from vk_tg_bridge.constants import (
     LONG_POLL_MODE,
+    PRESENCE_BATCH,
     LONG_POLL_TIMEOUT_BUFFER_SECONDS,
     LONG_POLL_VERSION,
     LONG_POLL_WAIT_SECONDS,
@@ -54,6 +55,7 @@ from vk_tg_bridge.vk_payload import (
     avatar_url_from_user,
     is_chat_peer,
     conversation_message_id,
+    peer_from_resolved,
     presence_from_user,
     message_body,
     reply_conversation_id,
@@ -147,12 +149,30 @@ class VkClient:
             reply_conversation_message_id=reply_conversation_id(items[0]),
         )
 
-    async def presence_for(self, user_id: int) -> tuple[bool, int | None] | None:
+    async def peer_by_screen_name(self, screen_name: str) -> int | None:
         payload = await self.call(
-            method=VkMethod.USERS_GET,
-            params={"user_ids": user_id, "fields": "online,last_seen"},
+            method=VkMethod.RESOLVE_SCREEN_NAME,
+            params={"screen_name": screen_name},
         )
-        return presence_from_user(payload)
+        return peer_from_resolved(payload)
+
+    async def presence_for(self, user_id: int) -> tuple[bool, int | None] | None:
+        found = await self.presence_for_many([user_id])
+        return found.get(user_id)
+
+    async def presence_for_many(self, user_ids: list[int]) -> dict[int, tuple[bool, int | None]]:
+        found: dict[int, tuple[bool, int | None]] = {}
+        for offset in range(0, len(user_ids), PRESENCE_BATCH):
+            chunk = user_ids[offset:offset + PRESENCE_BATCH]
+            payload = await self.call(
+                method=VkMethod.USERS_GET,
+                params={
+                    "user_ids": ",".join(str(user_id) for user_id in chunk),
+                    "fields": "online,last_seen",
+                },
+            )
+            found.update(_presence_map(payload))
+        return found
 
     async def sender_name(self, user_id: int | None) -> str:
         if user_id is None:
@@ -523,6 +543,19 @@ class VkClient:
         if JsonKey.RESPONSE not in payload:
             raise VkApiError(code=0, message=f"{method} без поля response")
         return payload[JsonKey.RESPONSE]
+
+
+def _presence_map(payload: Any) -> dict[int, tuple[bool, int | None]]:
+    if not isinstance(payload, list):
+        return {}
+    found: dict[int, tuple[bool, int | None]] = {}
+    for user in payload:
+        if not isinstance(user, dict) or not isinstance(user.get(JsonKey.ID), int):
+            continue
+        parsed = presence_from_user([user])
+        if parsed is not None:
+            found[user[JsonKey.ID]] = parsed
+    return found
 
 
 def _upload_url(payload: Any) -> str:

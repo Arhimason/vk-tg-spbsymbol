@@ -8,6 +8,7 @@ from telethon.errors import FloodWaitError
 
 from vk_tg_bridge.constants import (
     EMPTY_MESSAGE_TEXT,
+    ERROR_REPEAT_SECONDS,
     HEARTBEAT_FILE,
     MAX_PHOTOS_PER_MESSAGE,
     POLL_FRESH_SECONDS,
@@ -17,7 +18,16 @@ from vk_tg_bridge.constants import (
     SERVICE_MESSAGE_KEY,
     TYPING_COALESCE_SECONDS,
 )
-from vk_tg_bridge.health import format_status, is_status_command, write_heartbeat
+from vk_tg_bridge.health import (
+    IncidentGate,
+    brief,
+    exception_detail,
+    flood_wait_detail,
+    format_incident,
+    format_status,
+    is_status_command,
+    write_heartbeat,
+)
 from vk_tg_bridge.models import IncomingVkMessage, LoadedMessage, MessageLink, OutboundFile, PeerLink
 from vk_tg_bridge.store import Store
 from vk_tg_bridge.text import (
@@ -29,7 +39,7 @@ from vk_tg_bridge.text import (
     title_needs_refresh,
     with_sender,
 )
-from vk_tg_bridge.vk_payload import is_chat_peer
+from vk_tg_bridge.vk_payload import add_command_targets, is_chat_peer, page_target
 from vk_tg_bridge.telegram_bot import TelegramBot, TelegramBotError
 from vk_tg_bridge.telegram_user import TelegramUser
 from vk_tg_bridge.vk_client import VkApiError, VkClient
@@ -53,6 +63,9 @@ class Bridge:
         self._typing_at: dict[int, float] = {}
         self._abouts: dict[int, str] = {}
         self._poll_at: float | None = None
+        self._incidents = IncidentGate(repeat_after=ERROR_REPEAT_SECONDS)
+        self._reads: dict[int, int] = {}
+        self._reads_ready = asyncio.Event()
 
     async def handle_presence(
         self,
@@ -77,21 +90,50 @@ class Bridge:
             logger.exception("не удалось записать статус в чат %s", link.telegram_chat_id)
             return
         self._abouts[link.telegram_chat_id] = about
+        logger.info("описание %s: %s", link.telegram_chat_id, about)
 
     async def refresh_presence(self) -> None:
-        for link in self._store.peers():
-            if link.vk_peer_id <= 0 or is_chat_peer(link.vk_peer_id):
-                continue
-            try:
-                presence = await self._vk.presence_for(link.vk_peer_id)
-            except VkApiError as exc:
-                logger.error("не прочитался статус %s: %s", link.vk_peer_id, exc)
-                continue
-            if presence is None:
-                continue
-            online, stamp = presence
+        user_ids = [
+            link.vk_peer_id
+            for link in self._store.peers()
+            if link.vk_peer_id > 0 and not is_chat_peer(link.vk_peer_id)
+        ]
+        if not user_ids:
+            return
+        try:
+            found = await self._vk.presence_for_many(user_ids)
+        except VkApiError as exc:
+            logger.error("не прочитались статусы: %s", exc)
+            return
+        for user_id, (online, stamp) in found.items():
             moment = datetime.fromtimestamp(stamp) if stamp else None
-            await self.handle_presence(link.vk_peer_id, online=online, at=moment)
+            await self.handle_presence(user_id, online=online, at=moment)
+
+    async def report(
+        self,
+        *,
+        key: str,
+        title: str,
+        detail: str,
+        now: datetime | None = None,
+    ) -> None:
+        moment = now or datetime.now()
+        stamp = moment.timestamp()
+        if not self._incidents.due(key, stamp):
+            return
+        logger.error("ошибка «%s»: %s", title, detail)
+        chat_id = self._store.read_runtime_int(SERVICE_CHAT_KEY)
+        if chat_id is None:
+            logger.error("некуда отправить ошибку «%s»: служебный чат ещё не создан", title)
+            return
+        try:
+            await self._bot.send_text(
+                chat_id=chat_id,
+                text=format_incident(now=moment, title=title, detail=detail),
+            )
+        except TelegramBotError as exc:
+            logger.error("не удалось отправить ошибку «%s» в служебный чат: %s", title, exc)
+        self._incidents.mark(key, stamp)
 
     def note_poll(self) -> None:
         self._poll_at = time.monotonic()
@@ -129,8 +171,11 @@ class Bridge:
 
     async def _service_chat(self) -> int:
         saved = self._store.read_runtime_int(SERVICE_CHAT_KEY)
-        if saved is not None:
+        if saved is not None and await self._groups.has_chat(saved):
             return saved
+        if saved is not None:
+            logger.info("служебный чат %s недоступен этой сессии, создаю новый", saved)
+            self._store.delete_runtime(SERVICE_MESSAGE_KEY)
         chat_id = await self._groups.open_service_chat()
         self._store.save_runtime(SERVICE_CHAT_KEY, str(chat_id))
         return chat_id
@@ -154,6 +199,53 @@ class Bridge:
         if not is_status_command(text):
             return False
         return chat_id == self._store.read_runtime_int(SERVICE_CHAT_KEY)
+
+    async def open_pages(self, *, chat_id: int, targets: list[str]) -> None:
+        if not targets:
+            await self._bot.send_text(chat_id=chat_id, text="Формат: /a https://vk.com/id1")
+            return
+        lines: list[str] = []
+        for target in targets:
+            parsed = page_target(target)
+            if parsed is None:
+                lines.append(f"не ссылка VK: {target}")
+                continue
+            try:
+                peer_id = parsed if isinstance(parsed, int) else await self._vk.peer_by_screen_name(parsed)
+            except VkApiError as exc:
+                lines.append(f"не открылось {target}: {exc}")
+                await self.report(
+                    key=f"resolve:{target}",
+                    title="ссылка VK",
+                    detail=f"{target}\n{exception_detail(exc)}",
+                )
+                continue
+            if peer_id is None:
+                lines.append(f"не нашёл: {target}")
+                continue
+            existed = self._store.peer_by_vk(peer_id) is not None
+            try:
+                link = await self._ensure_chat(peer_id)
+            except FloodWaitError as exc:
+                notice = flood_wait_detail(exc.seconds, action="создать группу")
+                lines.append(notice)
+                await self.report(
+                    key=f"create-group:{peer_id}",
+                    title="создание чата",
+                    detail=f"{notice}\nссылка: {target}",
+                )
+                break
+            except Exception as exc:
+                lines.append(f"не открылось {target}: {exc}")
+                await self.report(
+                    key=f"create-group:{peer_id}",
+                    title="создание чата",
+                    detail=f"ссылка: {target}\n{exception_detail(exc)}",
+                )
+                continue
+            verb = "уже есть" if existed else "создан"
+            lines.append(f"{verb}: {link.title}")
+        await self._bot.send_text(chat_id=chat_id, text="\n".join(lines))
 
     async def handle_typing(self, peer_id: int, *, now: float | None = None) -> None:
         link = self._store.peer_by_vk(peer_id)
@@ -228,6 +320,13 @@ class Bridge:
             except Exception:
                 logger.exception("не удалось ответить на статус")
             return
+        targets = add_command_targets(text)
+        if targets is not None:
+            try:
+                await self.open_pages(chat_id=chat_id, targets=targets)
+            except Exception:
+                logger.exception("не удалось открыть чаты по ссылкам")
+            return
         outbound = list(files or [])
         cleaned = text.strip()
         if not cleaned and not outbound:
@@ -249,11 +348,16 @@ class Bridge:
                 files=outbound,
                 reply_to=reply_to,
             )
-        except VkApiError:
+        except VkApiError as exc:
             if reply_to is None:
-                raise
+                await self._report_vk_send(link.vk_peer_id, body, exc)
+                return
             logger.error("VK не принял reply для peer %s, отправляю без связи", link.vk_peer_id)
-            sent = await self._vk.send_reply(peer_id=link.vk_peer_id, text=body, files=outbound)
+            try:
+                sent = await self._vk.send_reply(peer_id=link.vk_peer_id, text=body, files=outbound)
+            except VkApiError as retry_exc:
+                await self._report_vk_send(link.vk_peer_id, body, retry_exc)
+                return
         if sent is None:
             return
         if telegram_message_id is not None and sent.conversation_message_id is not None:
@@ -275,6 +379,25 @@ class Bridge:
             await self._groups.react(chat_id=chat_id, message_id=message_id)
         except Exception:
             logger.exception("не удалось поставить отметку доставки на %s в чате %s", message_id, chat_id)
+
+    def note_read(self, peer_id: int, up_to: int) -> None:
+        current = self._reads.get(peer_id)
+        if current is None or up_to > current:
+            self._reads[peer_id] = up_to
+        self._reads_ready.set()
+
+    async def wait_reads(self) -> None:
+        await self._reads_ready.wait()
+
+    async def apply_pending_reads(self) -> None:
+        self._reads_ready.clear()
+        while self._reads:
+            peer_id, up_to = self._reads.popitem()
+            await self.mark_read(peer_id, up_to)
+
+    def wake_reads(self) -> None:
+        if self._reads:
+            self._reads_ready.set()
 
     async def mark_read(self, peer_id: int, up_to: int) -> None:
         pending = self._store.outgoing_unread(peer_id=peer_id, up_to=up_to)
@@ -325,6 +448,14 @@ class Bridge:
             logger.info("чат %s обновлён", link.telegram_chat_id)
         return updated
 
+    async def _report_vk_send(self, peer_id: int, body: str, exc: VkApiError) -> None:
+        preview = brief(body) if body else "без текста"
+        await self.report(
+            key=f"vk-send:{peer_id}",
+            title="отправка в VK",
+            detail=f"peer {peer_id}\nтекст: {preview}\n{exception_detail(exc)}",
+        )
+
     def _telegram_target(self, peer_id: int, conversation_message_id: int | None) -> int | None:
         if conversation_message_id is None:
             return None
@@ -354,6 +485,11 @@ class Bridge:
             )
         except VkApiError as exc:
             logger.error("не удалось поправить сообщение %s в VK: %s", link.vk_message_id, exc)
+            await self.report(
+                key=f"vk-edit:{link.vk_message_id}",
+                title="правка в VK",
+                detail=f"peer {link.vk_peer_id}, сообщение {link.vk_message_id}\n{exception_detail(exc)}",
+            )
 
     async def handle_delete(self, *, chat_id: int, telegram_message_id: int) -> None:
         link = self._store.link_by_telegram(chat_id=chat_id, message_id=telegram_message_id)
@@ -366,6 +502,11 @@ class Bridge:
             )
         except VkApiError as exc:
             logger.error("не удалось удалить сообщение %s в VK: %s", link.vk_message_id, exc)
+            await self.report(
+                key=f"vk-delete:{link.vk_message_id}",
+                title="удаление в VK",
+                detail=f"peer {link.vk_peer_id}, сообщение {link.vk_message_id}\n{exception_detail(exc)}",
+            )
 
     async def handle_vk_edit(
         self,
@@ -415,11 +556,19 @@ class Bridge:
                 message_id=link.telegram_message_id,
                 text=text,
             )
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "не удалось обновить копию %s в чате %s",
                 link.telegram_message_id,
                 link.telegram_chat_id,
+            )
+            await self.report(
+                key=f"revise:{link.telegram_chat_id}:{link.telegram_message_id}",
+                title="правка из VK",
+                detail=(
+                    f"чат {link.telegram_chat_id}, сообщение {link.telegram_message_id}\n"
+                    f"{exception_detail(exc)}"
+                ),
             )
             return
         self._store.update_body(

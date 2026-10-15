@@ -8,6 +8,8 @@ from vk_tg_bridge.vk_payload import (
     attachment_tokens,
     parse_message_deleted,
     parse_message_edit,
+    add_command_targets,
+    page_target,
     parse_new_message,
     parse_presence,
     presence_from_user,
@@ -61,7 +63,21 @@ def test_friend_presence_events() -> None:
     assert parse_presence([4, 1, 0, 42]) is None
     assert presence_from_user([{"id": 42, "online": 1}]) == (True, None)
     assert presence_from_user([{"id": 42, "last_seen": {"time": 1_760_546_460}}]) == (False, 1_760_546_460)
-    assert presence_from_user([{"id": 42}]) is None
+    assert presence_from_user([{"id": 42}]) == (False, None)
+
+
+def test_add_command_reads_several_vk_pages() -> None:
+    targets = add_command_targets("/a https://vk.com/id42 https://m.vk.ru/club5 vk.com/durov")
+    assert targets == ["https://vk.com/id42", "https://m.vk.ru/club5", "vk.com/durov"]
+    assert add_command_targets("/a@bridge https://vk.com/id7") == ["https://vk.com/id7"]
+    assert add_command_targets("/a") == []
+    assert add_command_targets("привет") is None
+    assert page_target("https://vk.com/id42") == 42
+    assert page_target("https://vk.com/club5") == -5
+    assert page_target("https://vk.com/public8") == -8
+    assert page_target("https://vk.com/im?sel=-12") == -12
+    assert page_target("https://vk.com/durov") == "durov"
+    assert page_target("https://example.com/id1") is None
 
 
 def test_typing_events_point_at_the_dialog() -> None:

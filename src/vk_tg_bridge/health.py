@@ -1,8 +1,10 @@
 import json
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from vk_tg_bridge.constants import GROUP_LIMIT_WAIT_SECONDS
 from vk_tg_bridge.text import format_clock
 
 _POLL_LINES = {
@@ -36,6 +38,51 @@ def format_status(*, now: datetime, poll_state: str, token_until: datetime | Non
 
 def silence_notice(since: datetime) -> str:
     return f"мост молчит с {format_clock(since)}"
+
+
+def format_incident(*, now: datetime, title: str, detail: str) -> str:
+    return "\n".join((f"ошибка · {title}", format_clock(now), detail.strip()))
+
+
+def flood_wait_detail(seconds: int, *, action: str) -> str:
+    if seconds >= GROUP_LIMIT_WAIT_SECONDS:
+        hours = max(1, round(seconds / 3600))
+        return (
+            f"Telegram не даёт {action}: пауза {hours} ч ({seconds} с). "
+            "Обычно так выглядит лимит около 50 новых групп в сутки. "
+            "Пока пауза не кончится, новые чаты не создаются."
+        )
+    return f"Telegram не даёт {action}: пауза {seconds} с."
+
+
+def exception_detail(exc: BaseException) -> str:
+    text = f"{type(exc).__name__}: {exc}".strip()
+    if exc.__traceback__ is None:
+        return text
+    stack = "".join(traceback.format_tb(exc.__traceback__)).strip()
+    if not stack:
+        return text
+    return f"{text}\n{stack[-1200:]}"
+
+
+def brief(text: str, limit: int = 180) -> str:
+    cleaned = " ".join(text.split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return f"{cleaned[:limit]}…"
+
+
+class IncidentGate:
+    def __init__(self, *, repeat_after: float) -> None:
+        self._repeat_after = repeat_after
+        self._seen: dict[str, float] = {}
+
+    def due(self, key: str, now: float) -> bool:
+        previous = self._seen.get(key)
+        return previous is None or now - previous >= self._repeat_after
+
+    def mark(self, key: str, now: float) -> None:
+        self._seen[key] = now
 
 
 def is_status_command(text: str) -> bool:

@@ -5,6 +5,7 @@ from vk_tg_bridge.constants import (
     CHAT_TITLE_MARK,
     DELETED_LABEL,
     EMPTY_MESSAGE_TEXT,
+    OFFLINE_ABOUT,
     ONLINE_ABOUT,
     REVISION_LABEL,
     TELEGRAM_MESSAGE_LIMIT,
@@ -98,7 +99,7 @@ def presence_about(*, online: bool, moment: datetime | None) -> str | None:
     if online:
         return ONLINE_ABOUT
     if moment is None:
-        return None
+        return OFFLINE_ABOUT
     return f"был {moment.day} {_MONTHS[moment.month - 1]} {moment:%H:%M}"
 
 

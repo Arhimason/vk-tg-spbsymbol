@@ -1,7 +1,54 @@
 import asyncio
 
 from vk_tg_bridge.constants import ATTACHMENT_FAILED_NOTE
-from vk_tg_bridge.telegram_user import outgoing_parts, telegram_message_id, telegram_reply_target
+from vk_tg_bridge.telegram_user import (
+    counts_as_own_message,
+    outgoing_parts,
+    telegram_message_id,
+    telegram_reply_target,
+)
+
+
+def test_other_members_count_as_own_when_the_switch_is_on() -> None:
+    own = counts_as_own_message(
+        relay_members=True,
+        outgoing=True,
+        sender_id=1,
+        bot_id=9,
+        service=False,
+    )
+    friend = counts_as_own_message(
+        relay_members=True,
+        outgoing=False,
+        sender_id=2,
+        bot_id=9,
+        service=False,
+    )
+    bot = counts_as_own_message(
+        relay_members=True,
+        outgoing=False,
+        sender_id=9,
+        bot_id=9,
+        service=False,
+    )
+    joined = counts_as_own_message(
+        relay_members=True,
+        outgoing=False,
+        sender_id=2,
+        bot_id=9,
+        service=True,
+    )
+    assert own
+    assert friend
+    assert not bot
+    assert not joined
+    assert not counts_as_own_message(
+        relay_members=False,
+        outgoing=False,
+        sender_id=2,
+        bot_id=9,
+        service=False,
+    )
 
 
 class _File:

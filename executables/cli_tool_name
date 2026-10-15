@@ -1,0 +1,17 @@
+#!/bin/bash
+export TERM_ORIG_VENV=$VIRTUAL_ENV
+PROJECT_ROOT=$(dirname $(dirname $(realpath $0)))
+SRC_DIR=$PROJECT_ROOT/src
+UV_BINARY=${UV_BINARY:-"uv"}
+VENV_BINARIES="$PROJECT_ROOT/.venv/bin"
+PYTHON3="$VENV_BINARIES/python3"
+SYNC_MARKER="$PROJECT_ROOT/.venv/.synced"
+
+# Sync if .venv doesn't exist or pyproject.toml is newer than last sync
+if [ ! -f "$SYNC_MARKER" ] || [ "$PROJECT_ROOT/pyproject.toml" -nt "$SYNC_MARKER" ]; then
+    $UV_BINARY --project "$PROJECT_ROOT" sync > /dev/null 2>&1
+    touch "$SYNC_MARKER"
+fi
+
+exec $PYTHON3 $SRC_DIR/<script-name> "$@"
+# exec "$VENV_BINARIES/<binary-name>" "$@"

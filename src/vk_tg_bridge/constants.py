@@ -48,7 +48,12 @@ DELIVERY_ATTEMPTS = 3
 RETRY_PAUSE_SECONDS = 2
 CURSOR_KEY = "vk_long_poll_ts"
 GROUP_ABOUT = "Диалог ВКонтакте"
+# Чужие сообщения в чате, кроме бота, уходят в VK как свои.
+RELAY_CHAT_MEMBERS = True
 ONLINE_ABOUT = "онлайн"
+OFFLINE_ABOUT = "не в сети"
+PRESENCE_BATCH = 25
+PRESENCE_POLL_SECONDS = 60
 SERVICE_CHAT_TITLE = "VK-мост"
 SERVICE_CHAT_ABOUT = "Служебный чат моста"
 SERVICE_CHAT_KEY = "service_chat_id"
@@ -56,6 +61,8 @@ SERVICE_MESSAGE_KEY = "service_message_id"
 HEARTBEAT_FILE = "heartbeat.json"
 WATCHDOG_FILE = "watchdog.json"
 HEARTBEAT_INTERVAL_SECONDS = 180
+ERROR_REPEAT_SECONDS = 900
+GROUP_LIMIT_WAIT_SECONDS = 3600
 HEARTBEAT_STALE_SECONDS = 600
 WATCH_INTERVAL_SECONDS = 60
 POLL_FRESH_SECONDS = 90
@@ -109,6 +116,7 @@ class VkMethod(StrEnum):
     EDIT = "messages.edit"
     DELETE = "messages.delete"
     USERS_GET = "users.get"
+    RESOLVE_SCREEN_NAME = "utils.resolveScreenName"
     GROUPS_GET_BY_ID = "groups.getById"
     CONVERSATIONS_BY_ID = "messages.getConversationsById"
     GET_MESSAGES_UPLOAD_SERVER = "photos.getMessagesUploadServer"
@@ -162,6 +170,7 @@ class JsonKey(StrEnum):
     FILE = "file"
     OWNER_ID = "owner_id"
     ID = "id"
+    OBJECT_ID = "object_id"
     ACCESS_KEY = "access_key"
     AUDIO_MESSAGE = "audio_message"
     DOC = "doc"

@@ -29,7 +29,7 @@ def test_versions_accumulate_and_deletion_is_marked() -> None:
 def test_presence_about_names_online_and_last_seen() -> None:
     assert presence_about(online=True, moment=None) == "онлайн"
     assert presence_about(online=False, moment=datetime(2026, 10, 15, 21, 10)) == "был 15 окт 21:10"
-    assert presence_about(online=False, moment=None) is None
+    assert presence_about(online=False, moment=None) == "не в сети"
 
 
 def test_clip_message() -> None:

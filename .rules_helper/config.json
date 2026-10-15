@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "agents": {
+    "pull": {
+      "storages": {
+        "rules_helper": [
+          "-my-python-package"
+        ]
+      }
+    },
+    "selected": "rules_helper__-my-python-package",
+    "selected_profiles": {}
+  },
+  "source_template": "python-package"
+}
