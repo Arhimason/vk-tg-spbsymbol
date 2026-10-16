@@ -28,6 +28,8 @@ from vk_tg_bridge.constants import (
     READ_OUTGOING_EVENT,
     USER_TYPING_EVENT,
     OUTBOX_FLAG,
+    STICKER_FILE_NAME,
+    VK_STICKER_SIZE,
     JsonKey,
 )
 from vk_tg_bridge.models import InboundFile, IncomingVkMessage, LongPollTick
@@ -559,9 +561,26 @@ def _sticker_file(body: dict[str, Any]) -> list[InboundFile]:
     animation = body.get("animation_url")
     if isinstance(animation, str) and animation:
         return [InboundFile(kind=MEDIA_DOCUMENT, url=animation, filename="sticker.webm")]
+    animations = body.get("animations")
+    if isinstance(animations, list):
+        for item in animations:
+            if not isinstance(item, dict):
+                continue
+            url = item.get(JsonKey.URL)
+            if isinstance(url, str) and url:
+                return [InboundFile(kind=MEDIA_DOCUMENT, url=url, filename="sticker.webm")]
     url = _widest_url(body.get("images")) or _widest_url(body.get("images_with_background"))
     if url:
-        return [InboundFile(kind=MEDIA_PHOTO, url=url, filename="sticker.png")]
+        return [InboundFile(kind=MEDIA_PHOTO, url=url, filename=STICKER_FILE_NAME)]
+    sticker_id = body.get("sticker_id")
+    if isinstance(sticker_id, int) and sticker_id > 0:
+        return [
+            InboundFile(
+                kind=MEDIA_PHOTO,
+                url=f"https://vk.com/sticker/1-{sticker_id}-{VK_STICKER_SIZE}",
+                filename=STICKER_FILE_NAME,
+            )
+        ]
     return []
 
 

@@ -16,6 +16,18 @@ _FONT_CANDIDATES = (
 )
 
 
+def sticker_on_white(content: bytes) -> bytes | None:
+    try:
+        image = Image.open(BytesIO(content)).convert("RGBA")
+    except (OSError, ValueError):
+        return None
+    canvas = Image.new("RGB", image.size, (255, 255, 255))
+    canvas.paste(image, mask=image.getchannel("A"))
+    output = BytesIO()
+    canvas.save(output, format="JPEG", quality=90)
+    return output.getvalue()
+
+
 def badge_avatar(content: bytes) -> bytes | None:
     try:
         source = Image.open(BytesIO(content))

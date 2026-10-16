@@ -99,6 +99,8 @@ VK_AUDIO_MESSAGE = "audio_message"
 VK_DOC = "doc"
 VK_VIDEO_FILE_FIELD = "video_file"
 VK_VIDEO_MESSAGE_SHAPE_ID = 1
+VK_STICKER_SIZE = 512
+STICKER_FILE_NAME = "sticker.png"
 
 MEDIA_PHOTO = "photo"
 MEDIA_VOICE = "voice"

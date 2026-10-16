@@ -3,8 +3,10 @@ from typing import Any
 
 import aiohttp
 
+from vk_tg_bridge.avatar import sticker_on_white
 from vk_tg_bridge.constants import (
     FILE_TOO_LARGE_NOTE,
+    STICKER_FILE_NAME,
     MAX_PHOTOS_PER_MESSAGE,
     MEDIA_ANIMATION,
     MEDIA_AUDIO,
@@ -140,9 +142,15 @@ class TelegramBot:
                 reply_to_message_id=reply_to_message_id,
             )
             return _message_id(result)
+        filename = item.filename or "file.bin"
+        if filename == STICKER_FILE_NAME:
+            flattened = sticker_on_white(content)
+            if flattened is not None:
+                content = flattened
+                filename = "sticker.jpg"
         form = aiohttp.FormData()
         form.add_field("chat_id", str(chat_id))
-        form.add_field(field, content, filename=item.filename or "file.bin")
+        form.add_field(field, content, filename=filename)
         if reply_to_message_id is not None:
             form.add_field("reply_to_message_id", str(reply_to_message_id))
         try:
@@ -153,7 +161,7 @@ class TelegramBot:
             logger.error("Telegram не принял reply, отправляю вложение без связи")
             plain = aiohttp.FormData()
             plain.add_field("chat_id", str(chat_id))
-            plain.add_field(field, content, filename=item.filename or "file.bin")
+            plain.add_field(field, content, filename=filename)
             result = await self._call(method=method, body=plain)
         return _message_id(result)
 

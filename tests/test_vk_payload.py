@@ -66,6 +66,23 @@ def test_friend_presence_events() -> None:
     assert presence_from_user([{"id": 42}]) == (False, None)
 
 
+def test_sticker_without_images_uses_its_public_picture() -> None:
+    text, files = message_body(
+        {
+            "attachments": [
+                {
+                    "type": "sticker",
+                    "sticker": {"sticker_id": 4413, "inner_type": "base_sticker_new"},
+                }
+            ]
+        }
+    )
+    assert text == ""
+    assert [(item.kind, item.url, item.filename) for item in files] == [
+        ("photo", "https://vk.com/sticker/1-4413-512", "sticker.png")
+    ]
+
+
 def test_add_command_reads_several_vk_pages() -> None:
     targets = add_command_targets("/a https://vk.com/id42 https://m.vk.ru/club5 vk.com/durov")
     assert targets == ["https://vk.com/id42", "https://m.vk.ru/club5", "vk.com/durov"]
