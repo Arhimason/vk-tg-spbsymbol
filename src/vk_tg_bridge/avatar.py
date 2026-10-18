@@ -28,6 +28,46 @@ def sticker_on_white(content: bytes) -> bytes | None:
     return output.getvalue()
 
 
+def animated_sticker_gif(content: bytes) -> bytes | None:
+    try:
+        image = Image.open(BytesIO(content))
+    except (OSError, ValueError):
+        return None
+    frames = getattr(image, "n_frames", 1)
+    if not isinstance(frames, int) or frames <= 1:
+        return None
+    pictures: list[Image.Image] = []
+    durations: list[int] = []
+    try:
+        for index in range(frames):
+            image.seek(index)
+            pictures.append(_gif_frame(image.convert("RGBA")))
+            duration = image.info.get("duration")
+            durations.append(int(duration) if isinstance(duration, int) and duration > 0 else 100)
+    except (OSError, ValueError):
+        return None
+    output = BytesIO()
+    pictures[0].save(
+        output,
+        format="GIF",
+        save_all=True,
+        append_images=pictures[1:],
+        duration=durations,
+        loop=0,
+        disposal=2,
+        transparency=255,
+    )
+    return output.getvalue()
+
+
+def _gif_frame(frame: Image.Image) -> Image.Image:
+    alpha = frame.getchannel("A")
+    palette = frame.convert("RGB").convert("P", palette=Image.Palette.ADAPTIVE, colors=255)
+    transparent = alpha.point(lambda value: 255 if value < 128 else 0)
+    palette.paste(255, mask=transparent)
+    return palette
+
+
 def badge_avatar(content: bytes) -> bytes | None:
     try:
         source = Image.open(BytesIO(content))

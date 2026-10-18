@@ -3,7 +3,7 @@ from typing import Any
 
 import aiohttp
 
-from vk_tg_bridge.avatar import sticker_on_white
+from vk_tg_bridge.avatar import animated_sticker_gif, sticker_on_white
 from vk_tg_bridge.constants import (
     FILE_TOO_LARGE_NOTE,
     STICKER_FILE_NAME,
@@ -143,7 +143,12 @@ class TelegramBot:
             )
             return _message_id(result)
         filename = item.filename or "file.bin"
-        if filename == STICKER_FILE_NAME:
+        gif = animated_sticker_gif(content)
+        if gif is not None and len(gif) <= TELEGRAM_FILE_LIMIT_BYTES:
+            content = gif
+            filename = "sticker.gif"
+            method, field, _limit = _telegram_method(MEDIA_ANIMATION)
+        elif filename == STICKER_FILE_NAME:
             flattened = sticker_on_white(content)
             if flattened is not None:
                 content = flattened
