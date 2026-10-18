@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from vk_tg_bridge.constants import VK_LANG_RU
 from vk_tg_bridge.models import Settings, VkCredentials
 from vk_tg_bridge.vk_auth import (
     VkAuthError,
@@ -15,6 +16,14 @@ from vk_tg_bridge.vk_auth import (
     should_refresh,
     write_session,
 )
+from vk_tg_bridge.vk_client import vk_api_query
+
+
+def test_vk_requests_ask_for_russian_names() -> None:
+    query = vk_api_query({"user_ids": 1, "lang": 3})
+    assert query["lang"] == VK_LANG_RU
+    assert query["v"] == "5.199"
+    assert query["user_ids"] == 1
 
 
 def _settings(**overrides: str) -> Settings:

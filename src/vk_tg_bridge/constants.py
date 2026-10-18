@@ -4,6 +4,7 @@ VK_API_URL = "https://api.vk.com/method/"
 VK_TOKEN_URL = "https://id.vk.ru/oauth2/auth"
 VK_EXCHANGE_URL = "https://oauth.vk.com/auth_by_exchange_token"
 VK_API_VERSION = "5.199"
+VK_LANG_RU = 0
 VK_MESSENGER_CLIENT_ID = "51453752"
 VK_SESSION_PATH = "data/vk-session.json"
 TELEGRAM_API_URL = "https://api.telegram.org"

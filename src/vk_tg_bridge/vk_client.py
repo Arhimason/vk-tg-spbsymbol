@@ -18,6 +18,7 @@ from vk_tg_bridge.constants import (
     MEDIA_VOICE,
     VK_VIDEO_MESSAGE_SHAPE_ID,
     VK_API_VERSION,
+    VK_LANG_RU,
     VK_AUDIO_MESSAGE,
     VK_DOC,
     VK_ERROR_AUTH_FAILED,
@@ -524,7 +525,7 @@ class VkClient:
 
     async def _request(self, *, method: str, params: dict[str, Any]) -> Any:
         headers = {"Authorization": f"Bearer {self._credentials.access_token}"}
-        query = {"v": VK_API_VERSION, **params}
+        query = vk_api_query(params)
         async with self._session.get(
             f"{VK_API_URL}{method}",
             params=query,
@@ -543,6 +544,10 @@ class VkClient:
         if JsonKey.RESPONSE not in payload:
             raise VkApiError(code=0, message=f"{method} без поля response")
         return payload[JsonKey.RESPONSE]
+
+
+def vk_api_query(params: dict[str, Any]) -> dict[str, Any]:
+    return {**params, "v": VK_API_VERSION, "lang": VK_LANG_RU}
 
 
 def _presence_map(payload: Any) -> dict[int, tuple[bool, int | None]]:
