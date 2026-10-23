@@ -2,6 +2,8 @@ import asyncio
 import json
 from datetime import datetime
 
+import aiohttp
+
 from telethon.errors import FloodWaitError
 
 from vk_tg_bridge.app import _deliver
@@ -631,3 +633,20 @@ def test_failed_vk_send_is_posted_to_the_service_chat(tmp_path) -> None:
     assert "отправка в VK" in bot.texts[0][1]
     assert "привет" in bot.texts[0][1]
     assert "не принято" in bot.texts[0][1]
+
+
+def test_unreachable_service_chat_does_not_kill_the_report(tmp_path) -> None:
+    bridge, store, _vk, _groups, bot = _bridge(tmp_path)
+    store.save_runtime(SERVICE_CHAT_KEY, "-1009")
+    calls = 0
+
+    async def fail_send(*, chat_id: int, text: str) -> int:
+        nonlocal calls
+        calls += 1
+        raise aiohttp.ClientError("Cannot connect to host api.telegram.org:443")
+
+    bot.send_text = fail_send
+    moment = datetime(2026, 10, 23, 4, 17)
+    asyncio.run(bridge.report(key="pulse", title="статус моста", detail="обрыв", now=moment))
+    asyncio.run(bridge.report(key="pulse", title="статус моста", detail="обрыв", now=moment))
+    assert calls == 1

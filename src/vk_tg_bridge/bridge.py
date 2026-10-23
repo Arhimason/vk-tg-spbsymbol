@@ -131,7 +131,7 @@ class Bridge:
                 chat_id=chat_id,
                 text=format_incident(now=moment, title=title, detail=detail),
             )
-        except TelegramBotError as exc:
+        except Exception as exc:
             logger.error("не удалось отправить ошибку «%s» в служебный чат: %s", title, exc)
         self._incidents.mark(key, stamp)
 
